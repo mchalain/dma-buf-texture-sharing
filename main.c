@@ -20,6 +20,22 @@
 void parse_arguments(int argc, char **argv, int *is_server);
 int* create_data(size_t size);
 void rotate_data(int* data, size_t size);
+GLuint export_framebuffer();
+
+const size_t TEXTURE_DATA_WIDTH = 256;
+const size_t TEXTURE_DATA_HEIGHT = TEXTURE_DATA_WIDTH;
+const size_t TEXTURE_DATA_SIZE = TEXTURE_DATA_WIDTH * TEXTURE_DATA_HEIGHT;
+// Socket paths for sending/receiving file descriptor and image storage data
+const char *SERVER_FILE = "/tmp/test_server";
+const char *CLIENT_FILE = "/tmp/test_client";
+// Custom image storage data description to transfer over socket
+struct texture_storage_metadata_t
+{
+    int fourcc;
+    EGLuint64KHR modifiers;
+    EGLint stride;
+    EGLint offset;
+};
 
 int main(int argc, char **argv)
 {
@@ -42,29 +58,10 @@ int main(int argc, char **argv)
     gl_setup_scene();
 
     // Server texture data
-    const size_t TEXTURE_DATA_WIDTH = 256;
-    const size_t TEXTURE_DATA_HEIGHT = TEXTURE_DATA_WIDTH;
-    const size_t TEXTURE_DATA_SIZE = TEXTURE_DATA_WIDTH * TEXTURE_DATA_HEIGHT;
     int* texture_data = create_data(TEXTURE_DATA_SIZE);
 
-    // -----------------------------
-    // --- Texture sharing start ---
-    // -----------------------------
-
-    // Socket paths for sending/receiving file descriptor and image storage data
-    const char *SERVER_FILE = "/tmp/test_server";
-    const char *CLIENT_FILE = "/tmp/test_client";
-    // Custom image storage data description to transfer over socket
-    struct texture_storage_metadata_t
-    {
-        int fourcc;
-        EGLuint64KHR modifiers;
-        EGLint stride;
-        EGLint offset;
-    };
-
     // GL texture that will be shared
-    GLuint texture;
+    GLuint texture, fbo = 0;
 
     // The next `if` block contains server code in the `true` branch and client code in the `false` branch. The `true` branch is always executed first and the `false` branch after it (in a different process). This is because the server loops at the end of the branch until it can send a message to the client and the client blocks at the start of the branch until it has a message to read. This way the whole `if` block from top to bottom represents the order of events as they happen.
     if (is_server)
@@ -77,49 +74,8 @@ int main(int argc, char **argv)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-        // EGL: Create EGL image from the GL texture
-        EGLImage image = eglCreateImage(egl_display,
-                                        egl_context,
-                                        EGL_GL_TEXTURE_2D,
-                                        (EGLClientBuffer)(uint64_t)texture,
-                                        NULL);
-        assert(image != EGL_NO_IMAGE);
-        
-        // The next line works around an issue in radeonsi driver (fixed in master at the time of writing). If you are
-        // having problems with texture rendering until the first texture update you can uncomment this line
-        // glFlush();
-
-        // EGL (extension: EGL_MESA_image_dma_buf_export): Get file descriptor (texture_dmabuf_fd) for the EGL image and get its
-        // storage data (texture_storage_metadata)
-        int texture_dmabuf_fd;
-        struct texture_storage_metadata_t texture_storage_metadata;
-
-        int num_planes;
-        PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC eglExportDMABUFImageQueryMESA =
-            (PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC)eglGetProcAddress("eglExportDMABUFImageQueryMESA");
-        EGLBoolean queried = eglExportDMABUFImageQueryMESA(egl_display,
-                                                           image,
-                                                           &texture_storage_metadata.fourcc,
-                                                           &num_planes,
-                                                           &texture_storage_metadata.modifiers);
-        assert(queried);
-        assert(num_planes == 1);
-        PFNEGLEXPORTDMABUFIMAGEMESAPROC eglExportDMABUFImageMESA =
-            (PFNEGLEXPORTDMABUFIMAGEMESAPROC)eglGetProcAddress("eglExportDMABUFImageMESA");
-        EGLBoolean exported = eglExportDMABUFImageMESA(egl_display,
-                                                       image,
-                                                       &texture_dmabuf_fd,
-                                                       &texture_storage_metadata.stride,
-                                                       &texture_storage_metadata.offset);
-        assert(exported);
-
-        // Unix Domain Socket: Send file descriptor (texture_dmabuf_fd) and texture storage data (texture_storage_metadata)
-        int sock = create_socket(SERVER_FILE);
-        while (connect_socket(sock, CLIENT_FILE) != 0)
-            ;
-        write_fd(sock, texture_dmabuf_fd, &texture_storage_metadata, sizeof(texture_storage_metadata));
-        close(sock);
-        close(texture_dmabuf_fd);
+        gl_draw_scene(texture);
+	fbo = export_framebuffer();
     }
     else
     {
@@ -168,12 +124,14 @@ int main(int argc, char **argv)
     {
         // Draw scene (uses shared texture)
         gl_draw_scene(texture);
-        eglSwapBuffers(egl_display, egl_surface);
 
         // Update texture data each second to see that the client didn't just copy the texture and is indeed referencing
         // the same texture data.
         if (is_server)
         {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            gl_draw_scene(texture);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
             time_t cur_time = time(NULL);
             if (last_time < cur_time)
             {
@@ -183,6 +141,7 @@ int main(int argc, char **argv)
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, TEXTURE_DATA_WIDTH, TEXTURE_DATA_HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, texture_data);
             }
         }
+        eglSwapBuffers(egl_display, egl_surface);
 
         // Check for errors
         assert(glGetError() == GL_NO_ERROR);
@@ -283,4 +242,72 @@ void rotate_data(int* data, size_t size)
         data[(x + half_edge) + (y + half_edge) * edge] = data[x + (y + half_edge) * edge];
         data[x + (y + half_edge) * edge] = temp;
     }
+}
+GLuint export_framebuffer()
+{
+    EGLDisplay egl_display = eglGetCurrentDisplay();
+    EGLContext egl_context = eglGetCurrentContext();
+    GLuint texture, fbo;
+    /*  Framebuffer */
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, TEXTURE_DATA_WIDTH, TEXTURE_DATA_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+
+    GLint ret = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    assert(ret == GL_FRAMEBUFFER_COMPLETE);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // EGL: Create EGL image from the GL texture
+    EGLImage image = eglCreateImage(egl_display,
+                                    egl_context,
+                                    EGL_GL_TEXTURE_2D,
+                                    (EGLClientBuffer)(uint64_t)texture,
+                                    NULL);
+    assert(image != EGL_NO_IMAGE);
+        
+    // The next line works around an issue in radeonsi driver (fixed in master at the time of writing). If you are
+    // having problems with texture rendering until the first texture update you can uncomment this line
+    glFlush();
+
+    // EGL (extension: EGL_MESA_image_dma_buf_export): Get file descriptor (texture_dmabuf_fd) for the EGL image and get its
+    // storage data (texture_storage_metadata)
+    int texture_dmabuf_fd;
+    struct texture_storage_metadata_t texture_storage_metadata;
+
+    int num_planes;
+    PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC eglExportDMABUFImageQueryMESA =
+        (PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC)eglGetProcAddress("eglExportDMABUFImageQueryMESA");
+    EGLBoolean queried = eglExportDMABUFImageQueryMESA(egl_display,
+                                                       image,
+                                                       &texture_storage_metadata.fourcc,
+                                                       &num_planes,
+                                                       &texture_storage_metadata.modifiers);
+    assert(queried);
+    assert(num_planes == 1);
+    PFNEGLEXPORTDMABUFIMAGEMESAPROC eglExportDMABUFImageMESA =
+        (PFNEGLEXPORTDMABUFIMAGEMESAPROC)eglGetProcAddress("eglExportDMABUFImageMESA");
+    EGLBoolean exported = eglExportDMABUFImageMESA(egl_display,
+                                                   image,
+                                                   &texture_dmabuf_fd,
+                                                   &texture_storage_metadata.stride,
+                                                   &texture_storage_metadata.offset);
+    assert(exported);
+
+    // Unix Domain Socket: Send file descriptor (texture_dmabuf_fd) and texture storage data (texture_storage_metadata)
+    int sock = create_socket(SERVER_FILE);
+    while (connect_socket(sock, CLIENT_FILE) != 0)
+        ;
+    write_fd(sock, texture_dmabuf_fd, &texture_storage_metadata, sizeof(texture_storage_metadata));
+    close(sock);
+    close(texture_dmabuf_fd);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return fbo;
 }
