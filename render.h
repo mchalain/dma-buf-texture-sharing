@@ -131,7 +131,6 @@ void gl_setup_scene()
 void gl_draw_scene(GLuint texture)
 {
     // clear
-    glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
     // draw quad

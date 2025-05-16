@@ -13,6 +13,8 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
+#define WINDOW_WIDTH 640
+#define WINDOW_HEIGHT 480
 #include "socket.h"
 #include "window.h"
 #include "render.h"
@@ -90,8 +92,8 @@ int main(int argc, char **argv)
         // EGL (extension: EGL_EXT_image_dma_buf_import): Create EGL image from file descriptor (texture_dmabuf_fd) and storage
         // data (texture_storage_metadata)
         EGLAttrib const attribute_list[] = {
-            EGL_WIDTH, TEXTURE_DATA_WIDTH,
-            EGL_HEIGHT, TEXTURE_DATA_HEIGHT,
+            EGL_WIDTH, WINDOW_WIDTH,
+            EGL_HEIGHT, WINDOW_HEIGHT,
             EGL_LINUX_DRM_FOURCC_EXT, texture_storage_metadata.fourcc,
             EGL_DMA_BUF_PLANE0_FD_EXT, texture_dmabuf_fd,
             EGL_DMA_BUF_PLANE0_OFFSET_EXT, texture_storage_metadata.offset,
@@ -120,6 +122,7 @@ int main(int argc, char **argv)
     // -----------------------------
 
     time_t last_time = time(NULL);
+    glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
     while (1)
     {
         // Draw scene (uses shared texture)
@@ -130,8 +133,11 @@ int main(int argc, char **argv)
         if (is_server)
         {
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
+            glClearColor(0.3f, 0.3f, 0.2f, 1.0f);
             gl_draw_scene(texture);
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
             time_t cur_time = time(NULL);
             if (last_time < cur_time)
             {
@@ -254,7 +260,7 @@ GLuint export_framebuffer()
 
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, TEXTURE_DATA_WIDTH, TEXTURE_DATA_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, WINDOW_WIDTH, WINDOW_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
