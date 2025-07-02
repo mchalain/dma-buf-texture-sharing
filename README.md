@@ -1,5 +1,7 @@
 # Example of inter-process texture sharing with DMA-BUF
 
+**Note:** This version share the server's window with the client and not the texture used by the server.
+
 An example of how to share a GL/GLES texture in EGL context between different processes by using DMA-BUF.
 
 Detailed explanation is in [this blog post](https://blaztinn.gitlab.io/post/dmabuf-texture-sharing/).
